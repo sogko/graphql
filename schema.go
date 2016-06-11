@@ -36,7 +36,7 @@ type Schema struct {
 	possibleTypeMap  map[string]map[string]bool
 
 	// mutex lock for possibleTypeMap that is accessed by multiple routines in executor through IsPossibleType()
-	typeMapMutex sync.RWMutex
+	typeMapMutex *sync.RWMutex
 }
 
 func NewSchema(config SchemaConfig) (Schema, error) {
@@ -45,7 +45,7 @@ func NewSchema(config SchemaConfig) (Schema, error) {
 	schema := Schema{
 		implementations: map[string][]*Object{},
 		possibleTypeMap: map[string]map[string]bool{},
-		typeMapMutex:    sync.RWMutex{},
+		typeMapMutex:    &sync.RWMutex{},
 	}
 
 	err = invariant(config.Query != nil, "Schema query must be Object Type but got: nil.")
