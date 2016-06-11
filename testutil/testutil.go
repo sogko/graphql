@@ -5,6 +5,7 @@ import (
 	"reflect"
 	"strconv"
 	"testing"
+	"time"
 
 	"github.com/graphql-go/graphql"
 	"github.com/graphql-go/graphql/language/ast"
@@ -323,18 +324,21 @@ func init() {
 }
 
 func GetHuman(id int) StarWarsChar {
+	time.Sleep(1 * time.Millisecond)
 	if human, ok := HumanData[id]; ok {
 		return human
 	}
 	return StarWarsChar{}
 }
 func GetDroid(id int) StarWarsChar {
+	time.Sleep(1 * time.Millisecond)
 	if droid, ok := DroidData[id]; ok {
 		return droid
 	}
 	return StarWarsChar{}
 }
 func GetHero(episode interface{}) interface{} {
+	time.Sleep(1 * time.Millisecond)
 	if episode == 5 {
 		return Luke
 	}
