@@ -4,6 +4,7 @@ import (
 	"fmt"
 	"reflect"
 	"regexp"
+	"sync"
 
 	"github.com/graphql-go/graphql/language/ast"
 	"golang.org/x/net/context"
@@ -365,8 +366,11 @@ type Object struct {
 	typeConfig ObjectConfig
 	fields     FieldDefinitionMap
 	interfaces []*Interface
-	// Interim alternative to throwing an error during schema definition at run-time
+
 	err error
+
+	// mutex lock for fields that is accessed by multiple routines in executor through Fields()
+	fieldsMutex sync.RWMutex
 }
 
 // IsTypeOfParams Params for IsTypeOfFn()
@@ -426,6 +430,9 @@ func (gt *Object) AddFieldConfig(fieldName string, fieldConfig *Field) {
 	case Fields:
 		gt.typeConfig.Fields.(Fields)[fieldName] = fieldConfig
 	}
+
+	// reset fields so that Fields() can reconstruct it
+	gt.fields = FieldDefinitionMap{}
 }
 func (gt *Object) Name() string {
 	return gt.PrivateName
@@ -437,6 +444,16 @@ func (gt *Object) String() string {
 	return gt.PrivateName
 }
 func (gt *Object) Fields() FieldDefinitionMap {
+
+	gt.fieldsMutex.RLock()
+	fields := gt.fields
+	gt.fieldsMutex.RUnlock()
+
+	if len(fields) > 0 {
+		return fields
+	}
+
+	// construct fields map from config (lazy-eval)
 	var configureFields Fields
 	switch gt.typeConfig.Fields.(type) {
 	case Fields:
@@ -445,8 +462,12 @@ func (gt *Object) Fields() FieldDefinitionMap {
 		configureFields = gt.typeConfig.Fields.(FieldsThunk)()
 	}
 	fields, err := defineFieldMap(gt, configureFields)
+
+	gt.fieldsMutex.Lock()
 	gt.err = err
 	gt.fields = fields
+	gt.fieldsMutex.Unlock()
+
 	return gt.fields
 }
 
@@ -905,6 +926,9 @@ type Enum struct {
 	nameLookup   map[string]*EnumValueDefinition
 
 	err error
+
+	// mutex lock for valuesLookup that is accessed by multiple routines in executor through Serialize()
+	valuesLookupMutex sync.RWMutex
 }
 type EnumValueConfigMap map[string]*EnumValueConfig
 type EnumValueConfig struct {
@@ -925,7 +949,9 @@ type EnumValueDefinition struct {
 }
 
 func NewEnum(config EnumConfig) *Enum {
-	gt := &Enum{}
+	gt := &Enum{
+		valuesLookupMutex: sync.RWMutex{},
+	}
 	gt.enumConfig = config
 
 	err := assertValidName(config.Name)
@@ -1021,15 +1047,25 @@ func (gt *Enum) Error() error {
 	return gt.err
 }
 func (gt *Enum) getValueLookup() map[interface{}]*EnumValueDefinition {
-	if len(gt.valuesLookup) > 0 {
-		return gt.valuesLookup
+
+	gt.valuesLookupMutex.RLock()
+	valuesLookup := gt.valuesLookup
+	gt.valuesLookupMutex.RUnlock()
+
+	if len(valuesLookup) > 0 {
+		return valuesLookup
 	}
-	valuesLookup := map[interface{}]*EnumValueDefinition{}
+
+	valuesLookup = map[interface{}]*EnumValueDefinition{}
 	for _, value := range gt.Values() {
 		valuesLookup[value.Value] = value
 	}
+
+	gt.valuesLookupMutex.Lock()
 	gt.valuesLookup = valuesLookup
-	return gt.valuesLookup
+	gt.valuesLookupMutex.Unlock()
+
+	return valuesLookup
 }
 
 func (gt *Enum) getNameLookup() map[string]*EnumValueDefinition {
