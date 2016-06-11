@@ -196,7 +196,7 @@ func BenchmarkQuery_DeeperQueryWithManyRootFieldsAndList(b *testing.B) {
 					}
 				}
 				appearsIn
-				PrimaryFunction
+				primaryFunction
 			}
 			artoo: droid(id: "2001") {
 				id
@@ -212,7 +212,7 @@ func BenchmarkQuery_DeeperQueryWithManyRootFieldsAndList(b *testing.B) {
 					}
 				}
 				appearsIn
-				PrimaryFunction
+				primaryFunction
 			}
 		}
 	`
