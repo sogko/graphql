@@ -116,7 +116,7 @@ func BenchmarkQuery_QueryWithManyRootFieldsAndList(b *testing.B) {
 					appearsIn
 				}
 				appearsIn
-				PrimaryFunction
+				primaryFunction
 			}
 			artoo: droid(id: "2001") {
 				id
@@ -127,7 +127,7 @@ func BenchmarkQuery_QueryWithManyRootFieldsAndList(b *testing.B) {
 					appearsIn
 				}
 				appearsIn
-				PrimaryFunction
+				primaryFunction
 			}
 		}
 	`

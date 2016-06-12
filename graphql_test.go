@@ -69,6 +69,170 @@ func init() {
 				},
 			},
 		},
+		{
+			Query: `
+				{
+					hero {
+						id
+						name
+						friends {
+							name
+						}
+						appearsIn
+					}
+					vader: human(id: "1001") {
+						id
+						name
+						friends {
+							id
+							name
+							appearsIn
+						}
+						appearsIn
+						homePlanet
+					}
+					threepio: droid(id: "2000") {
+						id
+						name
+						friends {
+							id
+							name
+							appearsIn
+						}
+						appearsIn
+						primaryFunction
+					}
+				}
+			`,
+			Schema: testutil.StarWarsSchema,
+			Expected: &graphql.Result{
+				Data: map[string]interface{}{
+					"threepio": map[string]interface{}{
+						"primaryFunction": "Protocol",
+						"id":              "2000",
+						"appearsIn": []interface{}{
+							"NEWHOPE",
+							"EMPIRE",
+							"JEDI",
+						},
+						"name": "C-3PO",
+						"friends": []interface{}{
+							map[string]interface{}{
+								"id":   "1000",
+								"name": "Luke Skywalker",
+								"appearsIn": []interface{}{
+									"NEWHOPE",
+									"EMPIRE",
+									"JEDI",
+								},
+							},
+							map[string]interface{}{
+								"name": "Han Solo",
+								"id":   "1002",
+								"appearsIn": []interface{}{
+									"NEWHOPE",
+									"EMPIRE",
+									"JEDI",
+								},
+							},
+							map[string]interface{}{
+								"name": "Leia Organa",
+								"appearsIn": []interface{}{
+									"NEWHOPE",
+									"EMPIRE",
+									"JEDI",
+								},
+								"id": "1003",
+							},
+							map[string]interface{}{
+								"appearsIn": []interface{}{
+									"NEWHOPE",
+									"EMPIRE",
+									"JEDI",
+								},
+								"id":   "2001",
+								"name": "R2-D2",
+							},
+						},
+					},
+					"vader": map[string]interface{}{
+						"id": "1001",
+						"appearsIn": []interface{}{
+							"NEWHOPE",
+							"EMPIRE",
+							"JEDI",
+						},
+						"friends": []interface{}{
+							map[string]interface{}{
+								"appearsIn": []interface{}{
+									"NEWHOPE",
+									"EMPIRE",
+									"JEDI",
+								},
+								"name": "Han Solo",
+								"id":   "1002",
+							},
+							map[string]interface{}{
+								"id":   "1003",
+								"name": "Leia Organa",
+								"appearsIn": []interface{}{
+									"NEWHOPE",
+									"EMPIRE",
+									"JEDI",
+								},
+							},
+							map[string]interface{}{
+								"id":   "2000",
+								"name": "C-3PO",
+								"appearsIn": []interface{}{
+									"NEWHOPE",
+									"EMPIRE",
+									"JEDI",
+								},
+							},
+							map[string]interface{}{
+								"id": "2001",
+								"appearsIn": []interface{}{
+									"NEWHOPE",
+									"EMPIRE",
+									"JEDI",
+								},
+								"name": "R2-D2",
+							},
+							map[string]interface{}{
+								"appearsIn": []interface{}{
+									"NEWHOPE",
+								},
+								"id":   "1004",
+								"name": "Wilhuff Tarkin",
+							},
+						},
+						"homePlanet": "Tatooine",
+						"name":       "Darth Vader",
+					},
+					"hero": map[string]interface{}{
+						"name": "R2-D2",
+						"id":   "2001",
+						"appearsIn": []interface{}{
+							"NEWHOPE",
+							"EMPIRE",
+							"JEDI",
+						},
+						"friends": []interface{}{
+							map[string]interface{}{
+								"name": "Luke Skywalker",
+							},
+							map[string]interface{}{
+								"name": "Han Solo",
+							},
+							map[string]interface{}{
+								"name": "Leia Organa",
+							},
+						},
+					},
+				},
+			},
+		},
 	}
 }
 
