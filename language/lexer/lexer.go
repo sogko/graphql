@@ -110,9 +110,8 @@ func readName(source *source.Source, position, runePosition int) Token {
 	endByte := position + 1
 	endRune := runePosition + 1
 	for {
-		code, n := runeAt(body, endByte)
+		code, _ := runeAt(body, endByte)
 		if (endByte != bodyLength) &&
-			n == 1 && // only ASCII chars are allowed to be names
 			(code == '_' || // _
 				code >= '0' && code <= '9' || // 0-9
 				code >= 'A' && code <= 'Z' || // A-Z
@@ -240,7 +239,6 @@ func readString(s *source.Source, start int) (Token, error) {
 					valueBuffer.WriteRune('"')
 					break
 				case '/':
-					valueBuffer.WriteRune('\\')
 					valueBuffer.WriteRune('/')
 					break
 				case '\\':

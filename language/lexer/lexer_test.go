@@ -257,7 +257,7 @@ func TestLexer_LexesStrings(t *testing.T) {
 				Kind:  TokenKind[STRING],
 				Start: 0,
 				End:   15,
-				Value: "slashes \\ \\/",
+				Value: "slashes \\ /",
 			},
 		},
 		{
