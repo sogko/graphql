@@ -539,6 +539,7 @@ func defineFieldMap(ttype Named, fields Fields) (FieldDefinitionMap, error) {
 			Type:              field.Type,
 			Resolve:           field.Resolve,
 			DeprecationReason: field.DeprecationReason,
+			Parallel:          field.Parallel,
 		}
 
 		fieldDef.Args = []*Argument{}
@@ -614,6 +615,7 @@ type Field struct {
 	Resolve           FieldResolveFn
 	DeprecationReason string `json:"deprecationReason"`
 	Description       string `json:"description"`
+	Parallel          bool
 }
 
 type FieldConfigArgument map[string]*ArgumentConfig
@@ -632,6 +634,7 @@ type FieldDefinition struct {
 	Args              []*Argument    `json:"args"`
 	Resolve           FieldResolveFn `json:"-"`
 	DeprecationReason string         `json:"deprecationReason"`
+	Parallel          bool
 }
 
 type FieldArgument struct {
@@ -1197,7 +1200,8 @@ func (gt *InputObject) Error() error {
 //     })
 //
 type List struct {
-	OfType Type `json:"ofType"`
+	OfType   Type `json:"ofType"`
+	Parallel bool
 
 	err error
 }

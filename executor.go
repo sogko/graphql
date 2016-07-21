@@ -252,10 +252,11 @@ func executeFieldsSerially(p ExecuteFieldsParams) *Result {
 
 	finalResults := map[string]interface{}{}
 	for responseName, fieldASTs := range p.Fields {
-		resolved, state := resolveField(p.ExecutionContext, p.ParentType, p.Source, fieldASTs)
-		if state.hasNoFieldDefs {
+		fieldDef := fieldDefFromASTs(p.ExecutionContext, p.ParentType, fieldASTs)
+		if fieldDef == nil {
 			continue
 		}
+		resolved := resolveField(p.ExecutionContext, p.ParentType, p.Source, fieldDef, fieldASTs)
 		finalResults[responseName] = resolved
 	}
 
@@ -263,6 +264,12 @@ func executeFieldsSerially(p ExecuteFieldsParams) *Result {
 		Data:   finalResults,
 		Errors: p.ExecutionContext.Errors(),
 	}
+}
+
+type parallelFieldResult struct {
+	ResponseName string
+	Value        interface{}
+	Panic        interface{}
 }
 
 // Implements the "Evaluating selection sets" section of the spec for "read" mode.
@@ -274,37 +281,48 @@ func executeFields(p ExecuteFieldsParams) *Result {
 		p.Fields = map[string][]*ast.Field{}
 	}
 
-	// concurrently resolve fields
+	// for concurrently resolving fields
 	wg := sync.WaitGroup{}
-	mtx := sync.Mutex{}
+	parallelResults := make(chan parallelFieldResult, len(p.Fields))
+
 	finalResults := make(map[string]interface{}, len(p.Fields))
-	panics := make(chan interface{}, len(p.Fields))
 	for responseName, fieldASTs := range p.Fields {
-		wg.Add(1)
-		go func(responseName string, fieldASTs []*ast.Field) {
-			defer func() {
-				if r := recover(); r != nil {
-					panics <- r
+		fieldDef := fieldDefFromASTs(p.ExecutionContext, p.ParentType, fieldASTs)
+		if fieldDef == nil {
+			continue
+		}
+
+		if fieldDef.Parallel {
+			// resolve field in goroutine
+			wg.Add(1)
+			go func(responseName string, fieldASTs []*ast.Field) {
+				defer func() {
+					if r := recover(); r != nil {
+						parallelResults <- parallelFieldResult{Panic: r}
+					}
+					wg.Done()
+				}()
+				parallelResults <- parallelFieldResult{
+					Value:        resolveField(p.ExecutionContext, p.ParentType, p.Source, fieldDef, fieldASTs),
+					ResponseName: responseName,
 				}
-				wg.Done()
-			}()
-			resolved, state := resolveField(p.ExecutionContext, p.ParentType, p.Source, fieldASTs)
-			if state.hasNoFieldDefs {
-				return
-			}
-			mtx.Lock()
-			finalResults[responseName] = resolved
-			mtx.Unlock()
-		}(responseName, fieldASTs)
+			}(responseName, fieldASTs)
+		} else {
+			finalResults[responseName] = resolveField(p.ExecutionContext, p.ParentType, p.Source, fieldDef, fieldASTs)
+		}
 	}
 
 	// wait for all routines to complete and then perform clean up
 	wg.Wait()
-	close(panics)
+	close(parallelResults)
 
-	// re-panic if a goroutine panicked
-	for p := range panics {
-		panic(p)
+	// collect parallel results
+	for result := range parallelResults {
+		// re-panic if a goroutine panicked
+		if result.Panic != nil {
+			panic(p)
+		}
+		finalResults[result.ResponseName] = result.Value
 	}
 
 	return &Result{
@@ -519,19 +537,24 @@ func getFieldEntryKey(node *ast.Field) string {
 	return ""
 }
 
-// Internal resolveField state
-type resolveFieldResultState struct {
-	hasNoFieldDefs bool
+func fieldDefFromASTs(eCtx *ExecutionContext, parentType *Object, fieldASTs []*ast.Field) *FieldDefinition {
+	fieldAST := fieldASTs[0]
+	fieldName := ""
+	if fieldAST.Name != nil {
+		fieldName = fieldAST.Name.Value
+	}
+
+	return getFieldDef(eCtx.Schema, parentType, fieldName)
 }
 
 // Resolves the field on the given source object. In particular, this
 // figures out the value that the field returns by calling its resolve function,
 // then calls completeValue to complete promises, serialize scalars, or execute
 // the sub-selection-set for objects.
-func resolveField(eCtx *ExecutionContext, parentType *Object, source interface{}, fieldASTs []*ast.Field) (result interface{}, resultState resolveFieldResultState) {
-	// catch panic from resolveFn
+func resolveField(eCtx *ExecutionContext, parentType *Object, source interface{}, fieldDef *FieldDefinition, fieldASTs []*ast.Field) interface{} {
 	var returnType Output
-	defer func() (interface{}, resolveFieldResultState) {
+	// catch panic from resolveFn
+	defer func() {
 		if r := recover(); r != nil {
 			var err error
 			if r, ok := r.(string); ok {
@@ -548,9 +571,7 @@ func resolveField(eCtx *ExecutionContext, parentType *Object, source interface{}
 				panic(gqlerrors.FormatError(err))
 			}
 			eCtx.AppendError(err)
-			return result, resultState
 		}
-		return result, resultState
 	}()
 
 	fieldAST := fieldASTs[0]
@@ -559,11 +580,6 @@ func resolveField(eCtx *ExecutionContext, parentType *Object, source interface{}
 		fieldName = fieldAST.Name.Value
 	}
 
-	fieldDef := getFieldDef(eCtx.Schema, parentType, fieldName)
-	if fieldDef == nil {
-		resultState.hasNoFieldDefs = true
-		return nil, resultState
-	}
 	returnType = fieldDef.Type
 	resolveFn := fieldDef.Resolve
 	if resolveFn == nil {
@@ -589,7 +605,7 @@ func resolveField(eCtx *ExecutionContext, parentType *Object, source interface{}
 
 	var resolveFnError error
 
-	result, resolveFnError = resolveFn(ResolveParams{
+	result, resolveFnError := resolveFn(ResolveParams{
 		Source:  source,
 		Args:    args,
 		Info:    info,
@@ -598,11 +614,11 @@ func resolveField(eCtx *ExecutionContext, parentType *Object, source interface{}
 
 	if resolveFnError != nil {
 		eCtx.AppendError(resolveFnError)
-		return nil, resultState
+		return nil
 	}
 
 	completed := completeValueCatchingError(eCtx, returnType, fieldASTs, info, result)
-	return completed, resultState
+	return completed
 }
 
 func completeValueCatchingError(eCtx *ExecutionContext, returnType Type, fieldASTs []*ast.Field, info ResolveInfo, result interface{}) (completed interface{}) {
@@ -808,32 +824,42 @@ func completeListValue(eCtx *ExecutionContext, returnType *List, fieldASTs []*as
 		panic(gqlerrors.FormatError(err))
 	}
 
-	// concurrently resolve list elements
 	itemType := returnType.OfType
-	wg := sync.WaitGroup{}
 	completedResults := make([]interface{}, resultVal.Len())
-	panics := make(chan interface{}, resultVal.Len())
-	for i := 0; i < resultVal.Len(); i++ {
-		wg.Add(1)
-		go func(j int) {
-			defer func() {
-				if r := recover(); r != nil {
-					panics <- r
-				}
-				wg.Done()
-			}()
-			val := resultVal.Index(j).Interface()
-			completedResults[j] = completeValueCatchingError(eCtx, itemType, fieldASTs, info, val)
-		}(i)
-	}
 
-	// wait for all routines to complete and then perform clean up
-	wg.Wait()
-	close(panics)
+	if returnType.Parallel {
+		// concurrently resolve list elements
+		wg := sync.WaitGroup{}
+		panics := make(chan interface{}, resultVal.Len())
+		for i := 0; i < resultVal.Len(); i++ {
+			wg.Add(1)
+			go func(j int) {
+				defer func() {
+					if r := recover(); r != nil {
+						panics <- r
+					}
+					wg.Done()
+				}()
+				val := resultVal.Index(j).Interface()
+				completedResults[j] = completeValueCatchingError(eCtx, itemType, fieldASTs, info, val)
+			}(i)
+		}
 
-	// re-panic if a goroutine panicked
-	for p := range panics {
-		panic(p)
+		// wait for all routines to complete and then perform clean up
+		wg.Wait()
+		close(panics)
+
+		// re-panic if a goroutine panicked
+		for p := range panics {
+			panic(p)
+		}
+	} else {
+		// resolve list elements serially
+		for i := 0; i < resultVal.Len(); i++ {
+			val := resultVal.Index(i).Interface()
+			completedItem := completeValueCatchingError(eCtx, itemType, fieldASTs, info, val)
+			completedResults[i] = completedItem
+		}
 	}
 
 	return completedResults
