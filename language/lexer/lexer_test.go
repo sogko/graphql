@@ -16,9 +16,54 @@ func createSource(body string) *source.Source {
 	return source.NewSource(&source.Source{Body: body})
 }
 
+func TestDisallowsUncommonControlCharacters(t *testing.T) {
+	tests := []Test{
+		{
+			Body: "\u0007",
+			Expected: `Syntax Error GraphQL (1:1) Invalid character "\\u0007"
+
+1: \u0007
+   ^
+`,
+		},
+	}
+	for _, test := range tests {
+		_, err := Lex(createSource(test.Body))(0)
+		if err == nil {
+			t.Fatalf("unexpected nil error\nexpected:\n%v\n\ngot:\n%v", test.Expected, err)
+		}
+		if err.Error() != test.Expected {
+			t.Fatalf("unexpected error.\nexpected:\n%v\n\ngot:\n%v", test.Expected, err.Error())
+		}
+	}
+}
+
+func TestAcceptsBOMHeader(t *testing.T) {
+	tests := []Test{
+		{
+			Body: "\uFEFF foo",
+			Expected: Token{
+				Kind:  TokenKind[NAME],
+				Start: 2,
+				End:   5,
+				Value: "foo",
+			},
+		},
+	}
+	for _, test := range tests {
+		token, err := Lex(&source.Source{Body: test.Body})(0)
+		if err != nil {
+			t.Fatalf("unexpected error: %v", err)
+		}
+		if !reflect.DeepEqual(token, test.Expected) {
+			t.Fatalf("unexpected token, expected: %v, got: %v", test.Expected, token)
+		}
+	}
+}
+
 func TestSkipsWhiteSpace(t *testing.T) {
 	tests := []Test{
-		Test{
+		{
 			Body: `
 
     foo
@@ -31,7 +76,7 @@ func TestSkipsWhiteSpace(t *testing.T) {
 				Value: "foo",
 			},
 		},
-		Test{
+		{
 			Body: `
     #comment
     foo#comment
@@ -43,7 +88,7 @@ func TestSkipsWhiteSpace(t *testing.T) {
 				Value: "foo",
 			},
 		},
-		Test{
+		{
 			Body: `,,,foo,,,`,
 			Expected: Token{
 				Kind:  TokenKind[NAME],
@@ -82,7 +127,7 @@ func TestErrorsRespectWhitespace(t *testing.T) {
 
 func TestLexesStrings(t *testing.T) {
 	tests := []Test{
-		Test{
+		{
 			Body: "\"simple\"",
 			Expected: Token{
 				Kind:  TokenKind[STRING],
@@ -91,7 +136,7 @@ func TestLexesStrings(t *testing.T) {
 				Value: "simple",
 			},
 		},
-		Test{
+		{
 			Body: "\" white space \"",
 			Expected: Token{
 				Kind:  TokenKind[STRING],
@@ -100,7 +145,7 @@ func TestLexesStrings(t *testing.T) {
 				Value: " white space ",
 			},
 		},
-		Test{
+		{
 			Body: "\"quote \\\"\"",
 			Expected: Token{
 				Kind:  TokenKind[STRING],
@@ -109,7 +154,7 @@ func TestLexesStrings(t *testing.T) {
 				Value: `quote "`,
 			},
 		},
-		Test{
+		{
 			Body: "\"escaped \\n\\r\\b\\t\\f\"",
 			Expected: Token{
 				Kind:  TokenKind[STRING],
@@ -118,7 +163,7 @@ func TestLexesStrings(t *testing.T) {
 				Value: "escaped \n\r\b\t\f",
 			},
 		},
-		Test{
+		{
 			Body: "\"slashes \\\\ \\/\"",
 			Expected: Token{
 				Kind:  TokenKind[STRING],
@@ -127,7 +172,7 @@ func TestLexesStrings(t *testing.T) {
 				Value: "slashes \\ \\/",
 			},
 		},
-		Test{
+		{
 			Body: "\"unicode \\u1234\\u5678\\u90AB\\uCDEF\"",
 			Expected: Token{
 				Kind:  TokenKind[STRING],
@@ -150,7 +195,15 @@ func TestLexesStrings(t *testing.T) {
 
 func TestLexReportsUsefulStringErrors(t *testing.T) {
 	tests := []Test{
-		Test{
+		{
+			Body: "\"",
+			Expected: `Syntax Error GraphQL (1:2) Unterminated string.
+
+1: "
+    ^
+`,
+		},
+		{
 			Body: "\"no end quote",
 			Expected: `Syntax Error GraphQL (1:14) Unterminated string.
 
@@ -158,7 +211,23 @@ func TestLexReportsUsefulStringErrors(t *testing.T) {
                 ^
 `,
 		},
-		Test{
+		{
+			Body: "\"contains unescaped \u0007 control char\"",
+			Expected: `Syntax Error GraphQL (1:21) Invalid character within String: "\\u0007".
+
+1: "contains unescaped \u0007 control char"
+                       ^
+`,
+		},
+		{
+			Body: "\"null-byte is not \u0000 end of file\"",
+			Expected: `Syntax Error GraphQL (1:19) Invalid character within String: "\\u0000".
+
+1: "null-byte is not \u0000 end of file"
+                     ^
+`,
+		},
+		{
 			Body: "\"multi\nline\"",
 			Expected: `Syntax Error GraphQL (1:7) Unterminated string.
 
@@ -167,7 +236,7 @@ func TestLexReportsUsefulStringErrors(t *testing.T) {
 2: line"
 `,
 		},
-		Test{
+		{
 			Body: "\"multi\rline\"",
 			Expected: `Syntax Error GraphQL (1:7) Unterminated string.
 
@@ -176,75 +245,57 @@ func TestLexReportsUsefulStringErrors(t *testing.T) {
 2: line"
 `,
 		},
-		Test{
-			Body: "\"multi\u2028line\"",
-			Expected: `Syntax Error GraphQL (1:7) Unterminated string.
-
-1: "multi
-         ^
-2: line"
-`,
-		},
-		Test{
-			Body: "\"multi\u2029line\"",
-			Expected: `Syntax Error GraphQL (1:7) Unterminated string.
-
-1: "multi
-         ^
-2: line"
-`,
-		},
-		Test{
+		{
 			Body: "\"bad \\z esc\"",
-			Expected: `Syntax Error GraphQL (1:7) Bad character escape sequence.
+			Expected: `Syntax Error GraphQL (1:7) Invalid character escape sequence: \\z.
 
 1: "bad \z esc"
          ^
 `,
 		},
-		Test{
+		{
 			Body: "\"bad \\x esc\"",
-			Expected: `Syntax Error GraphQL (1:7) Bad character escape sequence.
+			Expected: `Syntax Error GraphQL (1:7) Invalid character escape sequence: \\x.
 
 1: "bad \x esc"
          ^
 `,
 		},
-		Test{
+		{
 			Body: "\"bad \\u1 esc\"",
-			Expected: `Syntax Error GraphQL (1:7) Bad character escape sequence.
+			Expected: `Syntax Error GraphQL (1:7) Invalid character escape sequence: \u1 es
 
 1: "bad \u1 esc"
          ^
 `,
 		},
-		Test{
+		{
 			Body: "\"bad \\u0XX1 esc\"",
-			Expected: `Syntax Error GraphQL (1:7) Bad character escape sequence.
+			Expected: `Syntax Error GraphQL (1:7) Invalid character escape sequence: \u0XX1
 
 1: "bad \u0XX1 esc"
          ^
 `,
 		},
-		Test{
+		{
 			Body: "\"bad \\uXXXX esc\"",
-			Expected: `Syntax Error GraphQL (1:7) Bad character escape sequence.
+			Expected: `Syntax Error GraphQL (1:7) Invalid character escape sequence: \uXXXX
 
 1: "bad \uXXXX esc"
          ^
 `,
 		},
-		Test{
+		{
 			Body: "\"bad \\uFXXX esc\"",
-			Expected: `Syntax Error GraphQL (1:7) Bad character escape sequence.
+			Expected: `Syntax Error GraphQL (1:7) Invalid character escape sequence: \uFXXX
 
 1: "bad \uFXXX esc"
          ^
 `,
 		},
-		Test{
+		{
 			Body: "\"bad \\uXXXF esc\"",
-			Expected: `Syntax Error GraphQL (1:7) Bad character escape sequence.
+			Expected: `Syntax Error GraphQL (1:7) Invalid character escape sequence: \uXXXF
 
 1: "bad \uXXXF esc"
          ^
@@ -264,7 +315,7 @@ func TestLexReportsUsefulStringErrors(t *testing.T) {
 
 func TestLexesNumbers(t *testing.T) {
 	tests := []Test{
-		Test{
+		{
 			Body: "4",
 			Expected: Token{
 				Kind:  TokenKind[INT],
@@ -273,7 +324,7 @@ func TestLexesNumbers(t *testing.T) {
 				Value: "4",
 			},
 		},
-		Test{
+		{
 			Body: "4.123",
 			Expected: Token{
 				Kind:  TokenKind[FLOAT],
@@ -282,7 +333,7 @@ func TestLexesNumbers(t *testing.T) {
 				Value: "4.123",
 			},
 		},
-		Test{
+		{
 			Body: "-4",
 			Expected: Token{
 				Kind:  TokenKind[INT],
@@ -291,7 +342,7 @@ func TestLexesNumbers(t *testing.T) {
 				Value: "-4",
 			},
 		},
-		Test{
+		{
 			Body: "9",
 			Expected: Token{
 				Kind:  TokenKind[INT],
@@ -300,7 +351,7 @@ func TestLexesNumbers(t *testing.T) {
 				Value: "9",
 			},
 		},
-		Test{
+		{
 			Body: "0",
 			Expected: Token{
 				Kind:  TokenKind[INT],
@@ -309,7 +360,7 @@ func TestLexesNumbers(t *testing.T) {
 				Value: "0",
 			},
 		},
-		Test{
+		{
 			Body: "-4.123",
 			Expected: Token{
 				Kind:  TokenKind[FLOAT],
@@ -318,7 +369,7 @@ func TestLexesNumbers(t *testing.T) {
 				Value: "-4.123",
 			},
 		},
-		Test{
+		{
 			Body: "0.123",
 			Expected: Token{
 				Kind:  TokenKind[FLOAT],
@@ -327,7 +378,7 @@ func TestLexesNumbers(t *testing.T) {
 				Value: "0.123",
 			},
 		},
-		Test{
+		{
 			Body: "123e4",
 			Expected: Token{
 				Kind:  TokenKind[FLOAT],
@@ -336,7 +387,7 @@ func TestLexesNumbers(t *testing.T) {
 				Value: "123e4",
 			},
 		},
-		Test{
+		{
 			Body: "123E4",
 			Expected: Token{
 				Kind:  TokenKind[FLOAT],
@@ -345,7 +396,7 @@ func TestLexesNumbers(t *testing.T) {
 				Value: "123E4",
 			},
 		},
-		Test{
+		{
 			Body: "123e-4",
 			Expected: Token{
 				Kind:  TokenKind[FLOAT],
@@ -354,7 +405,7 @@ func TestLexesNumbers(t *testing.T) {
 				Value: "123e-4",
 			},
 		},
-		Test{
+		{
 			Body: "123e+4",
 			Expected: Token{
 				Kind:  TokenKind[FLOAT],
@@ -363,7 +414,7 @@ func TestLexesNumbers(t *testing.T) {
 				Value: "123e+4",
 			},
 		},
-		Test{
+		{
 			Body: "-1.123e4",
 			Expected: Token{
 				Kind:  TokenKind[FLOAT],
@@ -372,7 +423,7 @@ func TestLexesNumbers(t *testing.T) {
 				Value: "-1.123e4",
 			},
 		},
-		Test{
+		{
 			Body: "-1.123E4",
 			Expected: Token{
 				Kind:  TokenKind[FLOAT],
@@ -381,7 +432,7 @@ func TestLexesNumbers(t *testing.T) {
 				Value: "-1.123E4",
 			},
 		},
-		Test{
+		{
 			Body: "-1.123e-4",
 			Expected: Token{
 				Kind:  TokenKind[FLOAT],
@@ -390,7 +441,7 @@ func TestLexesNumbers(t *testing.T) {
 				Value: "-1.123e-4",
 			},
 		},
-		Test{
+		{
 			Body: "-1.123e+4",
 			Expected: Token{
 				Kind:  TokenKind[FLOAT],
@@ -399,7 +450,7 @@ func TestLexesNumbers(t *testing.T) {
 				Value: "-1.123e+4",
 			},
 		},
-		Test{
+		{
 			Body: "-1.123e4567",
 			Expected: Token{
 				Kind:  TokenKind[FLOAT],
@@ -422,7 +473,7 @@ func TestLexesNumbers(t *testing.T) {
 
 func TestLexReportsUsefulNumbeErrors(t *testing.T) {
 	tests := []Test{
-		Test{
+		{
 			Body: "00",
 			Expected: `Syntax Error GraphQL (1:2) Invalid number, unexpected digit after 0: "0".
 
@@ -430,7 +481,7 @@ func TestLexReportsUsefulNumbeErrors(t *testing.T) {
     ^
 `,
 		},
-		Test{
+		{
 			Body: "+1",
 			Expected: `Syntax Error GraphQL (1:1) Unexpected character "+".
 
@@ -438,15 +489,15 @@ func TestLexReportsUsefulNumbeErrors(t *testing.T) {
    ^
 `,
 		},
-		Test{
+		{
 			Body: "1.",
-			Expected: `Syntax Error GraphQL (1:3) Invalid number, expected digit but got: EOF.
+			Expected: `Syntax Error GraphQL (1:3) Invalid number, expected digit but got: <EOF>.
 
 1: 1.
      ^
 `,
 		},
-		Test{
+		{
 			Body: ".123",
 			Expected: `Syntax Error GraphQL (1:1) Unexpected character ".".
 
@@ -454,7 +505,7 @@ func TestLexReportsUsefulNumbeErrors(t *testing.T) {
    ^
 `,
 		},
-		Test{
+		{
 			Body: "1.A",
 			Expected: `Syntax Error GraphQL (1:3) Invalid number, expected digit but got: "A".
 
@@ -462,7 +513,7 @@ func TestLexReportsUsefulNumbeErrors(t *testing.T) {
      ^
 `,
 		},
-		Test{
+		{
 			Body: "-A",
 			Expected: `Syntax Error GraphQL (1:2) Invalid number, expected digit but got: "A".
 
@@ -470,15 +521,16 @@ func TestLexReportsUsefulNumbeErrors(t *testing.T) {
     ^
 `,
 		},
-		Test{
+		{
 			Body: "1.0e",
-			Expected: `Syntax Error GraphQL (1:5) Invalid number, expected digit but got: EOF.
+
+			Expected: `Syntax Error GraphQL (1:5) Invalid number, expected digit but got: <EOF>.
 
 1: 1.0e
        ^
 `,
 		},
-		Test{
+		{
 			Body: "1.0eA",
 			Expected: `Syntax Error GraphQL (1:5) Invalid number, expected digit but got: "A".
 
@@ -500,7 +552,7 @@ func TestLexReportsUsefulNumbeErrors(t *testing.T) {
 
 func TestLexesPunctuation(t *testing.T) {
 	tests := []Test{
-		Test{
+		{
 			Body: "!",
 			Expected: Token{
 				Kind:  TokenKind[BANG],
@@ -509,7 +561,7 @@ func TestLexesPunctuation(t *testing.T) {
 				Value: "",
 			},
 		},
-		Test{
+		{
 			Body: "$",
 			Expected: Token{
 				Kind:  TokenKind[DOLLAR],
@@ -518,7 +570,7 @@ func TestLexesPunctuation(t *testing.T) {
 				Value: "",
 			},
 		},
-		Test{
+		{
 			Body: "(",
 			Expected: Token{
 				Kind:  TokenKind[PAREN_L],
@@ -527,7 +579,7 @@ func TestLexesPunctuation(t *testing.T) {
 				Value: "",
 			},
 		},
-		Test{
+		{
 			Body: ")",
 			Expected: Token{
 				Kind:  TokenKind[PAREN_R],
@@ -536,7 +588,7 @@ func TestLexesPunctuation(t *testing.T) {
 				Value: "",
 			},
 		},
-		Test{
+		{
 			Body: "...",
 			Expected: Token{
 				Kind:  TokenKind[SPREAD],
@@ -545,7 +597,7 @@ func TestLexesPunctuation(t *testing.T) {
 				Value: "",
 			},
 		},
-		Test{
+		{
 			Body: ":",
 			Expected: Token{
 				Kind:  TokenKind[COLON],
@@ -554,7 +606,7 @@ func TestLexesPunctuation(t *testing.T) {
 				Value: "",
 			},
 		},
-		Test{
+		{
 			Body: "=",
 			Expected: Token{
 				Kind:  TokenKind[EQUALS],
@@ -563,7 +615,7 @@ func TestLexesPunctuation(t *testing.T) {
 				Value: "",
 			},
 		},
-		Test{
+		{
 			Body: "@",
 			Expected: Token{
 				Kind:  TokenKind[AT],
@@ -572,7 +624,7 @@ func TestLexesPunctuation(t *testing.T) {
 				Value: "",
 			},
 		},
-		Test{
+		{
 			Body: "[",
 			Expected: Token{
 				Kind:  TokenKind[BRACKET_L],
@@ -581,7 +633,7 @@ func TestLexesPunctuation(t *testing.T) {
 				Value: "",
 			},
 		},
-		Test{
+		{
 			Body: "]",
 			Expected: Token{
 				Kind:  TokenKind[BRACKET_R],
@@ -590,7 +642,7 @@ func TestLexesPunctuation(t *testing.T) {
 				Value: "",
 			},
 		},
-		Test{
+		{
 			Body: "{",
 			Expected: Token{
 				Kind:  TokenKind[BRACE_L],
@@ -599,7 +651,7 @@ func TestLexesPunctuation(t *testing.T) {
 				Value: "",
 			},
 		},
-		Test{
+		{
 			Body: "|",
 			Expected: Token{
 				Kind:  TokenKind[PIPE],
@@ -608,7 +660,7 @@ func TestLexesPunctuation(t *testing.T) {
 				Value: "",
 			},
 		},
-		Test{
+		{
 			Body: "}",
 			Expected: Token{
 				Kind:  TokenKind[BRACE_R],
@@ -631,7 +683,7 @@ func TestLexesPunctuation(t *testing.T) {
 
 func TestLexReportsUsefulUnknownCharacterError(t *testing.T) {
 	tests := []Test{
-		Test{
+		{
 			Body: "..",
 			Expected: `Syntax Error GraphQL (1:1) Unexpected character ".".
 
@@ -639,7 +691,7 @@ func TestLexReportsUsefulUnknownCharacterError(t *testing.T) {
    ^
 `,
 		},
-		Test{
+		{
 			Body: "?",
 			Expected: `Syntax Error GraphQL (1:1) Unexpected character "?".
 
@@ -647,9 +699,17 @@ func TestLexReportsUsefulUnknownCharacterError(t *testing.T) {
    ^
 `,
 		},
-		Test{
+		{
 			Body: "\u203B",
-			Expected: `Syntax Error GraphQL (1:1) Unexpected character "※".
+			Expected: `Syntax Error GraphQL (1:1) Unexpected character "\\u203B".
+
+1: ※
+   ^
+`,
+		},
+		{
+			Body: "\u203b",
+			Expected: `Syntax Error GraphQL (1:1) Unexpected character "\\u203B".
 
 1: ※
    ^
