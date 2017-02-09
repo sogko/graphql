@@ -79,8 +79,8 @@ type ExecutionContext struct {
 	VariableValues map[string]interface{}
 	Context        context.Context
 
-	errLock sync.RWMutex
-	errors  []gqlerrors.FormattedError
+	errors   []gqlerrors.FormattedError
+	errMutex sync.RWMutex
 }
 
 func (eCtx *ExecutionContext) AppendError(errs ...error) {
@@ -88,27 +88,26 @@ func (eCtx *ExecutionContext) AppendError(errs ...error) {
 	for _, err := range errs {
 		formattedErrors = append(formattedErrors, gqlerrors.FormatError(err))
 	}
-	eCtx.errLock.Lock()
+	eCtx.errMutex.Lock()
+	defer eCtx.errMutex.Unlock()
 	eCtx.errors = append(eCtx.errors, formattedErrors...)
-	eCtx.errLock.Unlock()
 }
 
-func (eCtx *ExecutionContext) Errors() (res []gqlerrors.FormattedError) {
-	eCtx.errLock.RLock()
-	res = eCtx.errors
-	eCtx.errLock.RUnlock()
-	return res
+func (eCtx *ExecutionContext) Errors() []gqlerrors.FormattedError {
+	eCtx.errMutex.RLock()
+	defer eCtx.errMutex.RUnlock()
+	return eCtx.errors
 }
 
 func (eCtx *ExecutionContext) SetErrors(errors []gqlerrors.FormattedError) {
-	eCtx.errLock.Lock()
+	eCtx.errMutex.Lock()
+	defer eCtx.errMutex.Unlock()
 	eCtx.errors = errors
-	eCtx.errLock.Unlock()
 }
 
 func buildExecutionContext(p BuildExecutionCtxParams) (*ExecutionContext, error) {
 	eCtx := &ExecutionContext{
-		errLock: sync.RWMutex{},
+		errMutex: sync.RWMutex{},
 	}
 	var operation *ast.OperationDefinition
 	fragments := map[string]ast.Definition{}

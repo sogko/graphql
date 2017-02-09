@@ -3,8 +3,8 @@ package testutil
 import (
 	"encoding/json"
 	"reflect"
-	"strconv"
 	"testing"
+	"time"
 
 	"github.com/graphql-go/graphql"
 	"github.com/graphql-go/graphql/language/ast"
@@ -20,8 +20,8 @@ var (
 	Tarkin         StarWarsChar
 	Threepio       StarWarsChar
 	Artoo          StarWarsChar
-	HumanData      map[int]StarWarsChar
-	DroidData      map[int]StarWarsChar
+	HumanData      map[string]StarWarsChar
+	DroidData      map[string]StarWarsChar
 	StarWarsSchema graphql.Schema
 
 	humanType *graphql.Object
@@ -85,16 +85,16 @@ func init() {
 	Tarkin.Friends = append(Tarkin.Friends, []StarWarsChar{Vader}...)
 	Threepio.Friends = append(Threepio.Friends, []StarWarsChar{Luke, Han, Leia, Artoo}...)
 	Artoo.Friends = append(Artoo.Friends, []StarWarsChar{Luke, Han, Leia}...)
-	HumanData = map[int]StarWarsChar{
-		1000: Luke,
-		1001: Vader,
-		1002: Han,
-		1003: Leia,
-		1004: Tarkin,
+	HumanData = map[string]StarWarsChar{
+		"1000": Luke,
+		"1001": Vader,
+		"1002": Han,
+		"1003": Leia,
+		"1004": Tarkin,
 	}
-	DroidData = map[int]StarWarsChar{
-		2000: Threepio,
-		2001: Artoo,
+	DroidData = map[string]StarWarsChar{
+		"2000": Threepio,
+		"2001": Artoo,
 	}
 
 	episodeEnum := graphql.NewEnum(graphql.EnumConfig{
@@ -135,8 +135,7 @@ func init() {
 		},
 		ResolveType: func(p graphql.ResolveTypeParams) *graphql.Object {
 			if character, ok := p.Value.(StarWarsChar); ok {
-				id, _ := strconv.Atoi(character.ID)
-				human := GetHuman(id)
+				human := GetHuman(character.ID)
 				if human.ID != "" {
 					return humanType
 				}
@@ -300,7 +299,7 @@ func init() {
 					},
 				},
 				Resolve: func(p graphql.ResolveParams) (interface{}, error) {
-					return GetHuman(p.Args["id"].(int)), nil
+					return GetHuman(p.Args["id"].(string)), nil
 				},
 			},
 			"droid": &graphql.Field{
@@ -312,7 +311,7 @@ func init() {
 					},
 				},
 				Resolve: func(p graphql.ResolveParams) (interface{}, error) {
-					return GetDroid(p.Args["id"].(int)), nil
+					return GetDroid(p.Args["id"].(string)), nil
 				},
 			},
 		},
@@ -322,19 +321,22 @@ func init() {
 	})
 }
 
-func GetHuman(id int) StarWarsChar {
+func GetHuman(id string) StarWarsChar {
+	time.Sleep(1 * time.Millisecond)
 	if human, ok := HumanData[id]; ok {
 		return human
 	}
 	return StarWarsChar{}
 }
-func GetDroid(id int) StarWarsChar {
+func GetDroid(id string) StarWarsChar {
+	time.Sleep(1 * time.Millisecond)
 	if droid, ok := DroidData[id]; ok {
 		return droid
 	}
 	return StarWarsChar{}
 }
 func GetHero(episode interface{}) interface{} {
+	time.Sleep(1 * time.Millisecond)
 	if episode == 5 {
 		return Luke
 	}
