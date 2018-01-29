@@ -1,17 +1,18 @@
 package graphql_test
 
 import (
+	"context"
 	"encoding/json"
 	"errors"
 	"fmt"
 	"reflect"
 	"testing"
+	"time"
 
 	"github.com/graphql-go/graphql"
 	"github.com/graphql-go/graphql/gqlerrors"
 	"github.com/graphql-go/graphql/language/location"
 	"github.com/graphql-go/graphql/testutil"
-	"golang.org/x/net/context"
 )
 
 func TestExecutesArbitraryCode(t *testing.T) {
@@ -84,7 +85,7 @@ func TestExecutesArbitraryCode(t *testing.T) {
 				"b": "Boring",
 				"c": []interface{}{
 					"Contrived",
-					nil,
+					"",
 					"Confusing",
 				},
 				"deeper": []interface{}{
@@ -1482,6 +1483,56 @@ func TestQuery_ExecutionDoesNotAddErrorsFromFieldResolveFn(t *testing.T) {
 	}
 }
 
+func TestQuery_InputObjectUsesFieldDefaultValueFn(t *testing.T) {
+	inputType := graphql.NewInputObject(graphql.InputObjectConfig{
+		Name: "Input",
+		Fields: graphql.InputObjectConfigFieldMap{
+			"default": &graphql.InputObjectFieldConfig{
+				Type:         graphql.String,
+				DefaultValue: "bar",
+			},
+		},
+	})
+	q := graphql.NewObject(graphql.ObjectConfig{
+		Name: "Query",
+		Fields: graphql.Fields{
+			"a": &graphql.Field{
+				Type: graphql.String,
+				Args: graphql.FieldConfigArgument{
+					"foo": &graphql.ArgumentConfig{
+						Type: graphql.NewNonNull(inputType),
+					},
+				},
+				Resolve: func(p graphql.ResolveParams) (interface{}, error) {
+					val := p.Args["foo"].(map[string]interface{})
+					def, ok := val["default"]
+					if !ok || def == nil {
+						return nil, errors.New("queryError: No 'default' param")
+					}
+					if def.(string) != "bar" {
+						return nil, errors.New("queryError: 'default' param has wrong value")
+					}
+					return "ok", nil
+				},
+			},
+		},
+	})
+	schema, err := graphql.NewSchema(graphql.SchemaConfig{
+		Query: q,
+	})
+	if err != nil {
+		t.Fatalf("unexpected error, got: %v", err)
+	}
+	query := `{ a(foo: {}) }`
+	result := graphql.Do(graphql.Params{
+		Schema:        schema,
+		RequestString: query,
+	})
+	if len(result.Errors) != 0 {
+		t.Fatalf("wrong result, unexpected errors: %+v", result.Errors)
+	}
+}
+
 func TestMutation_ExecutionAddsErrorsFromFieldResolveFn(t *testing.T) {
 	mError := errors.New("mutationError")
 	q := graphql.NewObject(graphql.ObjectConfig{
@@ -1637,5 +1688,58 @@ func TestGraphqlTag(t *testing.T) {
 	}
 	if !reflect.DeepEqual(result.Data, expectedData) {
 		t.Fatalf("unexpected result, got: %+v, expected: %+v", expectedData, result.Data)
+	}
+}
+
+func TestContextDeadline(t *testing.T) {
+	timeout := time.Millisecond * time.Duration(100)
+	acceptableDelay := time.Millisecond * time.Duration(10)
+	expectedErrors := []gqlerrors.FormattedError{
+		{
+			Message:   context.DeadlineExceeded.Error(),
+			Locations: []location.SourceLocation{},
+		},
+	}
+
+	// Query type includes a field that won't resolve within the deadline
+	var queryType = graphql.NewObject(
+		graphql.ObjectConfig{
+			Name: "Query",
+			Fields: graphql.Fields{
+				"hello": &graphql.Field{
+					Type: graphql.String,
+					Resolve: func(p graphql.ResolveParams) (interface{}, error) {
+						time.Sleep(2 * time.Second)
+						return "world", nil
+					},
+				},
+			},
+		})
+	schema, err := graphql.NewSchema(graphql.SchemaConfig{
+		Query: queryType,
+	})
+	if err != nil {
+		t.Fatalf("unexpected error, got: %v", err)
+	}
+
+	ctx, cancel := context.WithTimeout(context.Background(), timeout)
+	defer cancel()
+
+	startTime := time.Now()
+	result := graphql.Do(graphql.Params{
+		Schema:        schema,
+		RequestString: "{hello}",
+		Context:       ctx,
+	})
+	duration := time.Since(startTime)
+
+	if duration > timeout+acceptableDelay {
+		t.Fatalf("graphql.Do completed in %s, should have completed in %s", duration, timeout)
+	}
+	if !result.HasErrors() || len(result.Errors) == 0 {
+		t.Fatalf("Result should include errors when deadline is exceeded")
+	}
+	if !reflect.DeepEqual(expectedErrors, result.Errors) {
+		t.Fatalf("Unexpected result, Diff: %v", testutil.Diff(expectedErrors, result.Errors))
 	}
 }
