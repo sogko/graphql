@@ -6,6 +6,7 @@ import (
 	"fmt"
 	"reflect"
 	"strings"
+	"sync"
 
 	"github.com/graphql-go/graphql/gqlerrors"
 	"github.com/graphql-go/graphql/language/ast"
@@ -59,10 +60,10 @@ func Execute(p ExecuteParams) (result *Result) {
 			if r := recover(); r != nil {
 				var err error
 				if r, ok := r.(error); ok {
-					err = gqlerrors.FormatError(r)
+					err = r
+					exeContext.AppendError(err)
 				}
-				exeContext.Errors = append(exeContext.Errors, gqlerrors.FormatError(err))
-				result.Errors = exeContext.Errors
+				result.Errors = exeContext.Errors()
 				select {
 				case out <- result:
 				case <-done:
@@ -109,8 +110,33 @@ type executionContext struct {
 	Root           interface{}
 	Operation      ast.Definition
 	VariableValues map[string]interface{}
-	Errors         []gqlerrors.FormattedError
 	Context        context.Context
+
+	errLock sync.RWMutex
+	errors  []gqlerrors.FormattedError
+}
+
+func (eCtx *executionContext) AppendError(errs ...error) {
+	var formattedErrors []gqlerrors.FormattedError
+	for _, err := range errs {
+		formattedErrors = append(formattedErrors, gqlerrors.FormatError(err))
+	}
+	eCtx.errLock.Lock()
+	eCtx.errors = append(eCtx.errors, formattedErrors...)
+	eCtx.errLock.Unlock()
+}
+
+func (eCtx *executionContext) Errors() (res []gqlerrors.FormattedError) {
+	eCtx.errLock.RLock()
+	res = eCtx.errors
+	eCtx.errLock.RUnlock()
+	return res
+}
+
+func (eCtx *executionContext) SetErrors(errors []gqlerrors.FormattedError) {
+	eCtx.errLock.Lock()
+	eCtx.errors = errors
+	eCtx.errLock.Unlock()
 }
 
 func buildExecutionContext(p buildExecutionCtxParams) (*executionContext, error) {
@@ -122,7 +148,7 @@ func buildExecutionContext(p buildExecutionCtxParams) (*executionContext, error)
 		switch definition := definition.(type) {
 		case *ast.OperationDefinition:
 			if (p.OperationName == "") && operation != nil {
-				return nil, errors.New("Must provide operation name if query contains multiple operations.")
+				return eCtx, errors.New("Must provide operation name if query contains multiple operations.")
 			}
 			if p.OperationName == "" || definition.GetName() != nil && definition.GetName().Value == p.OperationName {
 				operation = definition
@@ -134,20 +160,20 @@ func buildExecutionContext(p buildExecutionCtxParams) (*executionContext, error)
 			}
 			fragments[key] = definition
 		default:
-			return nil, fmt.Errorf("GraphQL cannot execute a request containing a %v", definition.GetKind())
+			return eCtx, fmt.Errorf("GraphQL cannot execute a request containing a %v", definition.GetKind())
 		}
 	}
 
 	if operation == nil {
 		if p.OperationName != "" {
-			return nil, fmt.Errorf(`Unknown operation named "%v".`, p.OperationName)
+			return eCtx, fmt.Errorf(`Unknown operation named "%v".`, p.OperationName)
 		}
-		return nil, fmt.Errorf(`Must provide an operation.`)
+		return eCtx, fmt.Errorf(`Must provide an operation.`)
 	}
 
 	variableValues, err := getVariableValues(p.Schema, operation.GetVariableDefinitions(), p.Args)
 	if err != nil {
-		return nil, err
+		return eCtx, err
 	}
 
 	eCtx.Schema = p.Schema
@@ -155,7 +181,7 @@ func buildExecutionContext(p buildExecutionCtxParams) (*executionContext, error)
 	eCtx.Root = p.Root
 	eCtx.Operation = operation
 	eCtx.VariableValues = variableValues
-	eCtx.Errors = p.Errors
+	eCtx.SetErrors(p.Errors)
 	eCtx.Context = p.Context
 	return eCtx, nil
 }
@@ -266,7 +292,7 @@ func executeFieldsSerially(p executeFieldsParams) *Result {
 
 	return &Result{
 		Data:   finalResults,
-		Errors: p.ExecutionContext.Errors,
+		Errors: p.ExecutionContext.Errors(),
 	}
 }
 
@@ -279,18 +305,42 @@ func executeFields(p executeFieldsParams) *Result {
 		p.Fields = map[string][]*ast.Field{}
 	}
 
-	finalResults := map[string]interface{}{}
+	// concurrently resolve fields
+	wg := sync.WaitGroup{}
+	mtx := sync.Mutex{}
+	finalResults := make(map[string]interface{}, len(p.Fields))
+	panics := make(chan interface{}, len(p.Fields))
 	for responseName, fieldASTs := range p.Fields {
-		resolved, state := resolveField(p.ExecutionContext, p.ParentType, p.Source, fieldASTs)
-		if state.hasNoFieldDefs {
-			continue
-		}
-		finalResults[responseName] = resolved
+		wg.Add(1)
+		go func(responseName string, fieldASTs []*ast.Field) {
+			defer func() {
+				if r := recover(); r != nil {
+					panics <- r
+				}
+				wg.Done()
+			}()
+			resolved, state := resolveField(p.ExecutionContext, p.ParentType, p.Source, fieldASTs)
+			if state.hasNoFieldDefs {
+				return
+			}
+			mtx.Lock()
+			finalResults[responseName] = resolved
+			mtx.Unlock()
+		}(responseName, fieldASTs)
+	}
+
+	// wait for all routines to complete and then perform clean up
+	wg.Wait()
+	close(panics)
+
+	// re-panic if a goroutine panicked
+	for p := range panics {
+		panic(p)
 	}
 
 	return &Result{
 		Data:   finalResults,
-		Errors: p.ExecutionContext.Errors,
+		Errors: p.ExecutionContext.Errors(),
 	}
 }
 
@@ -299,6 +349,7 @@ type collectFieldsParams struct {
 	RuntimeType          *Object // previously known as OperationType
 	SelectionSet         *ast.SelectionSet
 	Fields               map[string][]*ast.Field
+	FieldOrder           []string
 	VisitedFragmentNames map[string]bool
 }
 
@@ -513,7 +564,6 @@ func resolveField(eCtx *executionContext, parentType *Object, source interface{}
 	var returnType Output
 	defer func() (interface{}, resolveFieldResultState) {
 		if r := recover(); r != nil {
-
 			var err error
 			if r, ok := r.(string); ok {
 				err = NewLocatedError(
@@ -528,7 +578,7 @@ func resolveField(eCtx *executionContext, parentType *Object, source interface{}
 			if _, ok := returnType.(*NonNull); ok {
 				panic(gqlerrors.FormatError(err))
 			}
-			eCtx.Errors = append(eCtx.Errors, gqlerrors.FormatError(err))
+			eCtx.AppendError(err)
 			return result, resultState
 		}
 		return result, resultState
@@ -578,7 +628,8 @@ func resolveField(eCtx *executionContext, parentType *Object, source interface{}
 	})
 
 	if resolveFnError != nil {
-		panic(gqlerrors.FormatError(resolveFnError))
+		eCtx.AppendError(resolveFnError)
+		return nil, resultState
 	}
 
 	completed := completeValueCatchingError(eCtx, returnType, fieldASTs, info, result)
@@ -594,7 +645,7 @@ func completeValueCatchingError(eCtx *executionContext, returnType Type, fieldAS
 				panic(r)
 			}
 			if err, ok := r.(gqlerrors.FormattedError); ok {
-				eCtx.Errors = append(eCtx.Errors, err)
+				eCtx.AppendError(err)
 			}
 			return completed
 		}
@@ -680,7 +731,6 @@ func completeValue(eCtx *executionContext, returnType Type, fieldASTs []*ast.Fie
 // completeAbstractValue completes value of an Abstract type (Union / Interface) by determining the runtime type
 // of that value, then completing based on that type.
 func completeAbstractValue(eCtx *executionContext, returnType Abstract, fieldASTs []*ast.Field, info ResolveInfo, result interface{}) interface{} {
-
 	var runtimeType *Object
 
 	resolveTypeParams := ResolveTypeParams{
@@ -790,13 +840,34 @@ func completeListValue(eCtx *executionContext, returnType *List, fieldASTs []*as
 		panic(gqlerrors.FormatError(err))
 	}
 
+	// concurrently resolve list elements
 	itemType := returnType.OfType
-	completedResults := []interface{}{}
+	wg := sync.WaitGroup{}
+	completedResults := make([]interface{}, resultVal.Len())
+	panics := make(chan interface{}, resultVal.Len())
 	for i := 0; i < resultVal.Len(); i++ {
-		val := resultVal.Index(i).Interface()
-		completedItem := completeValueCatchingError(eCtx, itemType, fieldASTs, info, val)
-		completedResults = append(completedResults, completedItem)
+		wg.Add(1)
+		go func(j int) {
+			defer func() {
+				if r := recover(); r != nil {
+					panics <- r
+				}
+				wg.Done()
+			}()
+			val := resultVal.Index(j).Interface()
+			completedResults[j] = completeValueCatchingError(eCtx, itemType, fieldASTs, info, val)
+		}(i)
 	}
+
+	// wait for all routines to complete and then perform clean up
+	wg.Wait()
+	close(panics)
+
+	// re-panic if a goroutine panicked
+	for p := range panics {
+		panic(p)
+	}
+
 	return completedResults
 }
 
